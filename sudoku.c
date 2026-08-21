@@ -115,10 +115,10 @@ bool isValid(int *a) {
     for (int i=0; i<9; i++) { //FIXME: O(n^2)
         if (a[i] == 0) continue; // Ignore empty cells 
         for (int j = i+1; j<9; j++) {
-            if (a[i] == a[j]) return true;
+            if (a[i] == a[j]) return false;
         }
     }
-    return false;
+    return true;
 }
 
 /* This function evaluates whether a given sudoku row
@@ -185,7 +185,7 @@ bool evalSudoku(SudokuBoard *sb) {
         if (evalRow(sb, i) && evalCol(sb, i) && evalSquare(sb, i)) {
             continue;
         } else return false;
-    };
+    }
     return true;
 };
 
