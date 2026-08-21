@@ -17,15 +17,37 @@
 
 /* -------------- TO DO --------------
 
- * una print per il sudoku che faccia vedere quali caselle sono fisse.
-    L'optimum sarebbe usare colori diversi, ma per ora ci facciamo
-    bastare l'ASCII.
+ * Migliorare le print usando i colori
 
- * funzioni variadiche per cogliere gli input del comando 
+ * refreshare continuamente lo schermo per far vedere gli update
+ 
+ * creare una barra soprastante che mostri le info di gioco
+    (modalità, difficoltà, durata della partita, shortcut per comandi, numeri completati(?))
+
+ * funzioni variadiche per cogliere gli input del comando (su terminale o da file) 
     (per passare implicitamente argomenti (tipo la variante base))
 
- * generazione e autorisoluzione del sudoku
+ * Accettare input dal giocatore per giocare
+
+ * FOLLIA: printare una seconda tabella piccola a lato per le annotazioni
  */
+
+/* PLAYER INPUT;
+ *
+ * - either WASD or arrows: move through the sudoku cells
+ * -- tab, shift+tab: move sideways; enter, shift+enter: move vertically
+ * 
+ * - numbers: input numbers
+ * 
+ * - canc: restore cell to 0
+ * 
+ * - ctrl+s: save
+ * 
+ * - ctrl+q: quit
+ * 
+ * - ctrl+z, ctrl+y = undo, redo
+ * 
+ * */
 
 
 // ============================= DATA STRUCTURES =============================
@@ -200,6 +222,18 @@ bool isSudokuFull(SudokuBoard *sb) {
 
 // =========================== SUDOKU CREATION ============================ 
 
+/* This function accepts as input an integer array and its length,
+ * then shuffles randomically its content. */
+void shuffle (int *a, int len) {
+    for (int i = len-1; i > 0; i--) {
+        int rn = rand() % (i+1);
+        int lorem = a[i];
+        a[i] = a[rn];
+        a[rn] = lorem;
+
+    }
+};
+
 /* Fill in a sudoku board according to the sudoku rules.
  * The initial sudoku board must have at least one cell set
  * to 0 for the algorhythm to work propertly.
@@ -217,13 +251,16 @@ bool solveSudoku(SudokuBoard *sb) {
     // No cell is set to zero --> sudoku is solved and valid
     if (target == -1) return true;
 
-
+    // Choose next cell randomly
+    int digits[] = {1,2,3,4,5,6,7,8,9};
+    shuffle(digits, 9);
     
-    for (int j=1; j<=9; j++) {
-
-        sb->cells[target]->i = j;
+    // Solve sudoku cell
+    for (int j=0; j<9; j++) {
+        
+        sb->cells[target]->i = digits[j];
         if (evalSudoku(sb)) {
-            if (solveSudoku(sb)) return true;
+            if (solveSudoku(sb)) return true; // Recursion
         }
 
         sb->cells[target]->i = 0;
@@ -232,8 +269,9 @@ bool solveSudoku(SudokuBoard *sb) {
     return false;
 };
 
-/* Create a new sudoku game depending on
- * the chosen difficulty level and game variation. */
+/* Clear some cells from a fully solved sudoku.
+ * The number of cells to be cleared depends on
+ * the desired game mode. */
 void generateSudoku(SudokuBoard *sb, int mode) {
     // Create a full, valid sudoku board
     solveSudoku(sb);
@@ -247,23 +285,20 @@ void generateSudoku(SudokuBoard *sb, int mode) {
         case CRAZY: given = 5; break;
     }
     
-    for (int j=0; j < (81 - given); j++) {
+    // Remove the correct amount of numbers
+    int to_clear = 81 - given;
+    
+    while (to_clear) {
         int r_idx = rand() % 81;
-        sb->cells[r_idx]->i = 0; 
+        if (sb->cells[r_idx]->i != 0) {
+            sb->cells[r_idx]->i = 0;
+            to_clear--;
+        }
     }
 
-    // Set remaining cells to fixed
-    for (int i=0; i < 81; i++) {if (sb->cells[i] != 0) sb->cells[i]->isfixed = true;}
+    // Set the remaining cells to fixed
+    for (int i=0; i < 81; i++) {if (sb->cells[i]->i != 0) sb->cells[i]->isfixed = true;}
 };
-
-
-
-
-
-
-/* Solve the given sudoku game automatically. */
-// int solveSudoku(SudokuBoard *sb) {};
-
 
 
 // ======================== BOARD PRINTING FUNCTIONS ======================
@@ -286,8 +321,9 @@ void generateSudoku(SudokuBoard *sb, int mode) {
 #define TAB_NUM 1
 #define TOP_PADDING 1
 /* Print a small version of the board that
- * does not show which cells are fixed. */
-void printSmallBoard(SudokuBoard *sb) {
+ * does not show through ASCII characters
+ * which cells are fixed. */
+void printSmallBoard(SudokuBoard *sb) { // FIXME: adapt to use colors for fixed numbers
     char *row_separator = "+-------+-------+-------+\n";
     char *tab = "\t";
     for (int j=0; j<TOP_PADDING; j++) printf("\n");
@@ -351,8 +387,9 @@ void printSmallBoard(SudokuBoard *sb) {
 
 
 /* Print a version of the board that shows
- * explicitely which cells are fixed. */     
-void printBigBoard(SudokuBoard *sb) { // FIXME: adaptate
+ * explicitely which cells are fixed thanks
+ * to ASCII characters. */     
+void printBigBoard(SudokuBoard *sb) {
     char *row_separator = "+-------------+-------------+-------------+\n";
     char *row_spacing = "|             |             |             |\n";
     char *tab = "\t";
@@ -383,7 +420,7 @@ void printBigBoard(SudokuBoard *sb) { // FIXME: adaptate
         if (sb->cells[i]->isfixed == true) {printf(".");}
         else {printf(" ");}
 
-        //Padding
+        // Padding
         if (((i+1) % 3 == 0)) printf(" ");
     
         // Column separator, Newline and Extra row 
@@ -415,7 +452,7 @@ int main(int argc, char **argv) {
 
     // ============== INITIALIZE THE SUDOKU BOARD ============
     SudokuBoard *sb = createSudokuBoard();
-    solveSudoku(sb);
+    generateSudoku(sb, EASY);
 
 
     // ============== SHOW THE GAME ON SCREEN ============
