@@ -39,8 +39,17 @@ typedef struct SudokuBoard {
     Cell *cells[81]; // Whole 9x9 grid
 } SudokuBoard;
 
+typedef struct Element {
+    int idx;
+    Cell *c;
+} Element;
 
-// ============== ALLOCATION WRAPPERS ==============
+typedef struct Stack {
+    Element **ele;
+    int len;
+} Stack;
+
+// =========================== ALLOCATION WRAPPERS =========================
 
 // Try to allocate n bytes, else close the program.
 void *xmalloc(size_t size) {
@@ -52,10 +61,18 @@ void *xmalloc(size_t size) {
 	return ptr;
 }
 
+// Try to reallocate n bytes, else close the program.
+void *xrealloc(void *oldptr, size_t size) {
+	void *ptr = realloc(oldptr, size);
+	if (ptr == NULL) {
+		fprintf(stderr, "Out of memory reallocating %zu bytes\n", size);
+		exit(1);
+	}
+	return ptr;
+};
 
-// ====================== 1D ARRAY HELPER FUNCTIONS ====================
 
-//char *arrayToCoords(int idx) {};
+// ====================== 1D ARRAY HELPER FUNCTIONS ==========================
 
 /* Transorm a set of x,y coordinates into the corresponding
  * index of a monodimensional array representing a 9x9 grid. */
@@ -64,7 +81,7 @@ int coordsToArray(int x, int y) {
 };
 
 
-// =========================== BOARD OBJECTS ============================
+// ============================= BOARD OBJECTS ============================
 /* Allocate and initialize objects. */
 
 Cell *createCell(int i, bool isfixed) {
@@ -78,24 +95,56 @@ SudokuBoard *createSudokuBoard(void) {
     SudokuBoard *sb = xmalloc(sizeof(*sb));
 
     // Initialize cells
-    for (int i=0; i <=9*9; i++) {    
-        sb->cells[i] = createCell(i, false);
+    for (int i=0; i < 9*9; i++) {    
+        sb->cells[i] = createCell(0, false);
     }
     return sb;
 };
 
-// ------ Probably useless funtion ------
-/* Set the cell's 'isfixed' variable either to true or false. */
-void setCellState(Cell *c, bool state) {
-    c->isfixed = state;
-};
-// ---------------------------------------
 
-/* Set the cell's 'i' variable  to the desired numerical value,
- * provided that the cell is not fixed. */
-void setCellValue(Cell *c, int i) {
-    if (!c->isfixed) c->i = i;
-}
+// ============================== BACK-END OBJECTS ====================================
+
+Element *createElement(Cell *c, int idx) {
+    Element *ele = xmalloc(sizeof(*ele));
+    ele->c = c;
+    ele->idx = idx;
+    return ele;
+};
+
+Stack *createStack(void) {
+    Stack *stack = xmalloc(sizeof(*stack));
+    stack->len = 0;
+    return stack;
+};
+
+void stackPush(Stack *stack, Element *ele) {
+    Element *new_ele = xrealloc(stack->ele, sizeof(*ele) * (stack->len+1));
+
+	// Handle memory allocation failure appropriately
+	if (!new_ele) {
+		fprintf(stderr, "Error appending an element to a list.");
+        exit(1);
+    }
+
+    stack->ele = new_ele;
+	stack->ele[stack->len] = ele;
+	stack->len++;
+};
+
+Element *stackPop(Stack *stack) {
+    if (stack->len == 0) {return NULL;}
+
+    Element *to_pop = stack->ele[stack->len-1];
+	stack->len--;
+
+    // Manage memory allocation after pop
+	if (stack->len == 0) {
+		free(stack->ele);
+		stack->ele = NULL;
+	} else stack->ele = xrealloc(stack->ele, sizeof(Element*) * (stack->len));
+
+	return to_pop;
+};
 
 
 // ======================= SUDOKU-OBJECT EVALUATION FUNCTIONS =======================
@@ -105,7 +154,8 @@ void setCellValue(Cell *c, int i) {
  * Return values: true if array contains repetitions, false otherwise. */
 bool hasDoubles(int *a) {
     for (int i=0; i<9; i++) { //FIXME: O(n^2)
-        for (int j=0; j<9; j++) {if (a[i] == a[j]) return false;}
+        if (a[i] == 0) continue; // Ignore empty cells 
+        for (int j = i+1; j<9; j++) {if (a[i] == a[j]) return false;}
     }
     return true;
 }
@@ -150,63 +200,22 @@ bool evalCol(SudokuBoard *sb, int col) {
  * 
  * Return values: true if square is valid, false otherwise. */
 bool evalSquare(SudokuBoard *sb, int sqr_num) {
+    // Top-left row and col for each 3x3 subgrid (0-indexed)
+    int start_row = ((sqr_num - 1) / 3) * 3;
+    int start_col = ((sqr_num - 1) % 3) * 3;
 
-    /*  sqr_num:
-     * +-------+-------+-------+ 
-     * |       |       |       |
-     * |   1   |   2   |   3   |
-     * |       |       |       |
-     * +-------+-------+-------+ 
-     * |       |       |       | 
-     * |   4   |   5   |   6   | 
-     * |       |       |       | 
-     * +-------+-------+-------+ 
-     * |       |       |       | 
-     * |   7   |   8   |   9   | 
-     * |       |       |       | 
-     * +-------+-------+-------+
-     * * * * * * * * * * */
-
-    // Get the top left corner coordinates from the square number
-    int row, col;
-    switch (sqr_num) {
-    case 1:
-        row =1; col =1; break;
-    case 2:
-        row =1; col =4; break;
-    case 3:
-        row =1; col =7; break;
-    case 4:
-        row =4; col =1; break;
-    case 5:
-        row =4; col =4; break;
-    case 6:
-        row =4; col =4; break;
-    case 7:
-        row =7; col =1; break;
-    case 8:
-        row =7; col =4; break;
-    case 9:
-        row =7; col =7; break;
-    }
-
-    // Get the square center's coordinates
-    row++; col++;
-
-    // Get the square cells' values
     int buf[9];
     int counter = 0;
-    for (signed int xo=(-1); xo<=1; xo++) {
-        for (signed int yo=(-1); yo<=1; yo++) {
-            int idx = coordsToArray(row+xo, col+yo);
-            Cell *c = sb->cells[idx];
-            buf[counter] = c->i;
-            counter++;
-        } 
+
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+            int idx = coordsToArray(start_col + c, start_row + r);
+            buf[counter++] = sb->cells[idx]->i;
+        }
     }
 
     return !hasDoubles(buf); 
-};
+}
 
 /* Check whether the generated sudoku was generated correctly.
  * Return values: true if sudoku board valid, false otherwise. */
@@ -218,6 +227,8 @@ bool evalSudoku(SudokuBoard *sb) {
     };
     return true;
 }; 
+
+// =========================== SUDOKU CREATION ============================ 
 
 /* Create a new sudoku game depending on
  * the chosen difficulty level and game variation. */
@@ -239,19 +250,21 @@ void generateSudoku(SudokuBoard *sb, int mode) {
     for (int i=0; i < given; i++) {
         while (1) { 
             // Random numerical value
-            rn = rand() % (9-1 +1); // rand() % (upper - lower + 1)
+            rn = rand() % (10); // rand() % (upper - lower + 1)
             // Random cell
             rx = rand() % (8-0 +1);
             ry = rand() % (8-0 +1);
 
             Cell *c = sb->cells[coordsToArray(rx, ry)];
-            if (!c->isfixed && (c->i != rn)) { 
-                setCellValue(c, rn);
-                setCellState(c, true);
-                
-                //if (!evalSudoku(sb)) {continue;}
-
-                break;
+            if (!c->isfixed && (c->i != rn) && (rn != 0)) { 
+                c->i = rn;
+                if (!evalSudoku(sb)) {
+                    c->i = 0;
+                    continue;
+                } else {
+                    c->isfixed = true;
+                    break;
+                }
 
             } else continue;
         }
@@ -304,7 +317,8 @@ void printSmallBoard(SudokuBoard *sb) {
         if (i*3 % 9 == 0) printf("|");
         
         // Padding and Value
-        printf(" %d", ((sb->cells[i]->i) % 9));
+        if (sb->cells[i]->i == 0) {printf(" _");}
+        else {printf(" %d", ((sb->cells[i]->i) % 10));}
 
         //Padding
         if (((i+1) % 3 == 0)) printf(" ");
@@ -368,11 +382,12 @@ void printBigBoard(SudokuBoard *sb) { // FIXME: adaptate
         if (i*3 % 9 == 0) printf("|");
         
         // Value
-        printf("  %d", ((sb->cells[i]->i) % 9));
+        if (sb->cells[i]->i == 0) {printf("  _");}
+        else {printf("  %d", (sb->cells[i]->i));}
 
         // isfixed() character and Padding
         if (sb->cells[i]->isfixed == true) {printf(".");}
-        else printf(" ");
+        else {printf(" ");}
 
         //Padding
         if (((i+1) % 3 == 0)) printf(" ");
