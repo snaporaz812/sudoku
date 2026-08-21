@@ -31,23 +31,14 @@
 // ============================= DATA STRUCTURES =============================
 
 typedef struct Cell {
-    int i;          // cell's value
-    bool isfixed;   // if true, i cannot be modified
+    int i;          // Cell's value
+    bool isfixed;   // If true, i cannot be modified by the player
 } Cell;
 
 typedef struct SudokuBoard { 
     Cell *cells[81]; // Whole 9x9 grid
 } SudokuBoard;
 
-typedef struct Element {
-    int idx;
-    Cell *c;
-} Element;
-
-typedef struct Stack {
-    Element **ele;
-    int len;
-} Stack;
 
 // =========================== ALLOCATION WRAPPERS =========================
 
@@ -84,9 +75,9 @@ int coordsToArray(int x, int y) {
 // ============================= BOARD OBJECTS ============================
 /* Allocate and initialize objects. */
 
-Cell *createCell(int i, bool isfixed) {
+Cell *createCell(int value, bool isfixed) {
     Cell *c = xmalloc(sizeof(*c));
-    c->i = i;
+    c->i = value;
     c->isfixed = isfixed;
     return c;
 };
@@ -95,69 +86,39 @@ SudokuBoard *createSudokuBoard(void) {
     SudokuBoard *sb = xmalloc(sizeof(*sb));
 
     // Initialize cells
-    for (int i=0; i < 9*9; i++) {    
+    for (int i=0; i < 81; i++) {    
         sb->cells[i] = createCell(0, false);
     }
+
     return sb;
 };
 
-
-// ============================== BACK-END OBJECTS ====================================
-
-Element *createElement(Cell *c, int idx) {
-    Element *ele = xmalloc(sizeof(*ele));
-    ele->c = c;
-    ele->idx = idx;
-    return ele;
-};
-
-Stack *createStack(void) {
-    Stack *stack = xmalloc(sizeof(*stack));
-    stack->len = 0;
-    return stack;
-};
-
-void stackPush(Stack *stack, Element *ele) {
-    Element *new_ele = xrealloc(stack->ele, sizeof(*ele) * (stack->len+1));
-
-	// Handle memory allocation failure appropriately
-	if (!new_ele) {
-		fprintf(stderr, "Error appending an element to a list.");
-        exit(1);
+/* Destroy a sudoku board and all its cells. */
+void destroySudokuBoard(SudokuBoard *sb) {
+    for (int j=0; j<81; j++) {
+        Cell *c = sb->cells[j];
+        
+        free(c);
+        c = NULL;   
     }
 
-    stack->ele = new_ele;
-	stack->ele[stack->len] = ele;
-	stack->len++;
-};
-
-Element *stackPop(Stack *stack) {
-    if (stack->len == 0) {return NULL;}
-
-    Element *to_pop = stack->ele[stack->len-1];
-	stack->len--;
-
-    // Manage memory allocation after pop
-	if (stack->len == 0) {
-		free(stack->ele);
-		stack->ele = NULL;
-	} else stack->ele = xrealloc(stack->ele, sizeof(Element*) * (stack->len));
-
-	return to_pop;
+    free(sb);
 };
 
 
 // ======================= SUDOKU-OBJECT EVALUATION FUNCTIONS =======================
 
 /* This function evaluates whether a given array of numbers
- * contains the same number twice.
+ * contains repetitions of the same number.
  * Return values: true if array contains repetitions, false otherwise. */
-bool hasDoubles(int *a) {
+bool isValid(int *a) {
     for (int i=0; i<9; i++) { //FIXME: O(n^2)
         if (a[i] == 0) continue; // Ignore empty cells 
-        for (int j = i+1; j<9; j++) {if (a[i] == a[j]) return false;}
+        for (int j = i+1; j<9; j++) {
+            if (a[i] == a[j]) return true;
+        }
     }
-    return true;
+    return false;
 }
 
 /* This function evaluates whether a given sudoku row
@@ -173,7 +134,7 @@ bool evalRow(SudokuBoard *sb, int row) {
         buf[i] = c->i;
     }
 
-    return !hasDoubles(buf); 
+    return isValid(buf); 
 };
 
 /* This function evaluates whether a given sudoku column
@@ -189,7 +150,7 @@ bool evalCol(SudokuBoard *sb, int col) {
         buf[i] = c->i;
     }
 
-    return !hasDoubles(buf); 
+    return isValid(buf); 
 };
 
 /* This function evaluates whether a given sudoku square
@@ -214,11 +175,11 @@ bool evalSquare(SudokuBoard *sb, int sqr_num) {
         }
     }
 
-    return !hasDoubles(buf); 
+    return isValid(buf); 
 }
 
 /* Check whether the generated sudoku was generated correctly.
- * Return values: true if sudoku board valid, false otherwise. */
+ * Return values: true if sudoku board is valid, false otherwise. */
 bool evalSudoku(SudokuBoard *sb) {
     for (int i=1; i<=9; i++) {
         if (evalRow(sb, i) && evalCol(sb, i) && evalSquare(sb, i)) {
@@ -226,50 +187,76 @@ bool evalSudoku(SudokuBoard *sb) {
         } else return false;
     };
     return true;
-}; 
+};
+
+/* Return true if all sudoku cells are different from zero,
+ * otherwise return false. */
+bool isSudokuFull(SudokuBoard *sb) {
+    for (int i=0; i < 81; i++) {
+        if (sb->cells[i]->i == 0) return false;
+    }
+    return true;
+}
 
 // =========================== SUDOKU CREATION ============================ 
+
+/* Fill in a sudoku board according to the sudoku rules.
+ * The initial sudoku board must have at least one cell set
+ * to 0 for the algorhythm to work propertly.
+ * Return values: true if the sudoku is solved, false otherwise. */
+bool solveSudoku(SudokuBoard *sb) {
+    // Find the first cell set to 0 in the array
+    int target = -1;
+    for (int j=0; j < 81; j++) {
+        if (sb->cells[j]->i == 0) {
+            target = j;
+            break;
+        }
+    }
+
+    // No cell is set to zero --> sudoku is solved and valid
+    if (target == -1) return true;
+
+
+    
+    for (int j=1; j<=9; j++) {
+
+        sb->cells[target]->i = j;
+        if (evalSudoku(sb)) {
+            if (solveSudoku(sb)) return true;
+        }
+
+        sb->cells[target]->i = 0;
+    }
+    
+    return false;
+};
 
 /* Create a new sudoku game depending on
  * the chosen difficulty level and game variation. */
 void generateSudoku(SudokuBoard *sb, int mode) {
-    int rn; // 1-9
-    int rx, ry; // 0-8
-    int given; // n° of given, fixed numbers
+    // Create a full, valid sudoku board
+    solveSudoku(sb);
 
-    switch (mode) {
-    case EASY: given = 32; break;
-    case MEDIUM: given = 16; break;
-    case HARD: given = 8; break;
-    case CRAZY: given = 4; break;
+    // Leave only the desired amount of cells
+    int given;
+    switch(mode) {
+        case EASY: given = 33; break;
+        case MEDIUM: given = 17; break;
+        case HARD: given = 11; break;
+        case CRAZY: given = 5; break;
+    }
+    
+    for (int j=0; j < (81 - given); j++) {
+        int r_idx = rand() % 81;
+        sb->cells[r_idx]->i = 0; 
     }
 
-    /* Try to set a random cell with a random value.
-     * Try again with new numbers if the cell is not modifiable
-     * or if the sudoku rules would be broken. */
-    for (int i=0; i < given; i++) {
-        while (1) { 
-            // Random numerical value
-            rn = rand() % (10); // rand() % (upper - lower + 1)
-            // Random cell
-            rx = rand() % (8-0 +1);
-            ry = rand() % (8-0 +1);
-
-            Cell *c = sb->cells[coordsToArray(rx, ry)];
-            if (!c->isfixed && (c->i != rn) && (rn != 0)) { 
-                c->i = rn;
-                if (!evalSudoku(sb)) {
-                    c->i = 0;
-                    continue;
-                } else {
-                    c->isfixed = true;
-                    break;
-                }
-
-            } else continue;
-        }
-    }
+    // Set remaining cells to fixed
+    for (int i=0; i < 81; i++) {if (sb->cells[i] != 0) sb->cells[i]->isfixed = true;}
 };
+
+
 
 
 
@@ -301,16 +288,18 @@ void generateSudoku(SudokuBoard *sb, int mode) {
 /* Print a small version of the board that
  * does not show which cells are fixed. */
 void printSmallBoard(SudokuBoard *sb) {
+    char *row_separator = "+-------+-------+-------+\n";
+    char *tab = "\t";
     for (int j=0; j<TOP_PADDING; j++) printf("\n");
     for (int i=0; i<81; i++) {
         
         // Tab
-        if ((i % 9 == 0)) {for (int j=0; j<TAB_NUM; j++) printf("\t");}
+        if ((i % 9 == 0)) {for (int j=0; j<TAB_NUM; j++) printf("%s", tab);}
 
         // Row separator
         if (i % (9*3) == 0) {
-            printf("+-------+-------+-------+\n");
-            for (int j=0; j<TAB_NUM; j++) printf("\t");
+            printf("%s", row_separator);
+            for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
         } 
     
         // Column separator
@@ -328,8 +317,8 @@ void printSmallBoard(SudokuBoard *sb) {
     }
 
     // Last Row separator
-    for (int j=0; j<TAB_NUM; j++) printf("\t");
-    printf("+-------+-------+-------+\n"); //+tab
+    for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+    printf("%s", row_separator);
     printf("\n");
 };
 
@@ -364,18 +353,23 @@ void printSmallBoard(SudokuBoard *sb) {
 /* Print a version of the board that shows
  * explicitely which cells are fixed. */     
 void printBigBoard(SudokuBoard *sb) { // FIXME: adaptate
+    char *row_separator = "+-------------+-------------+-------------+\n";
+    char *row_spacing = "|             |             |             |\n";
+    char *tab = "\t";
+
+
     for (int j=0; j<TOP_PADDING; j++) printf("\n");
     for (int i=0; i<81; i++) {
         
         // Tab
-        if ((i % 9 == 0)) {for (int j=0; j<TAB_NUM; j++) printf("\t");}
+        if ((i % 9 == 0)) {for (int j=0; j<TAB_NUM; j++) printf("%s", tab);}
 
         // Row separator
         if (i % (9*3) == 0) {
-            printf("+-------------+-------------+-------------+\n");
-            for (int j=0; j<TAB_NUM; j++) printf("\t");
-            printf("|             |             |             |\n");
-            for (int j=0; j<TAB_NUM; j++) printf("\t");
+            printf("%s", row_separator);
+            for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+            printf("%s", row_spacing);
+            for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
         } 
     
         // Column separator
@@ -395,14 +389,14 @@ void printBigBoard(SudokuBoard *sb) { // FIXME: adaptate
         // Column separator, Newline and Extra row 
         if ((i % 9 == 8)) {
             printf("|\n");
-            for (int j=0; j<TAB_NUM; j++) printf("\t");
-            printf("|             |             |             |\n");
+            for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+            printf("%s", row_spacing);
         }
     }
 
     // Last Row separator
-    for (int j=0; j<TAB_NUM; j++) printf("\t");
-    printf("+-------------+-------------+-------------+\n"); //+tab
+    for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+    printf("%s", row_separator); //+tab
     printf("\n");
 };
 
@@ -421,7 +415,7 @@ int main(int argc, char **argv) {
 
     // ============== INITIALIZE THE SUDOKU BOARD ============
     SudokuBoard *sb = createSudokuBoard();
-    generateSudoku(sb, EASY);
+    solveSudoku(sb);
 
 
     // ============== SHOW THE GAME ON SCREEN ============
@@ -430,7 +424,7 @@ int main(int argc, char **argv) {
 
     // ============== SIVALLETTO SEQUENCE ============
     // Destroy the sudoku board
-    free(sb);
+    destroySudokuBoard(sb);
 
     return 0;
 }
