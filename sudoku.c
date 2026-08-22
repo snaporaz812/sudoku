@@ -2,24 +2,41 @@
 #include <stdbool.h>
 #include <stdlib.h>  
 #include <stdarg.h>
-#include <string.h>
-#include <time.h>
+#include <string.h> // strcmp()
+#include <time.h> // rand()
+#include <termios.h>
+#include <unistd.h> // usleep()
 
-// MODE
-#define EASY 0
-#define MEDIUM 1
-#define HARD 2
-#define CRAZY 3
+
+
+// DIFFICULTY SETTINGS
+enum MODES {
+    EASY,
+    MEDIUM,
+    HARD,
+    CRAZY,
+    DEBUG = 255
+};
 
 // VARIANT
 // normal
 // knopki
 
+// ANSI TERMINAL COLOR ESCAPE SEQUENCES
+#define COL_RESET "\x1b[0m"
+#define COL_BLUE "\x1b[38;2;0;0;255m"
+#define COL_BLACK "\x1b[38;2;0;0;0m" 
+#define BACK_COL_BLUE "\x1b[48;2;0;0;255m"
+#define BACK_COL_WHITE "\x1b[48;2;255;255;255m"
+/* BREAKDOWN: \x1b [ (xx; t; r;g;b) m
+ * xx: foreground (38) or background(48)
+ * t: 24-bit true color mode (2) --> allows RGB
+ * r, g, b: each go from 0-255 <-- COLOR */
+
+
 /* -------------- TO DO --------------
 
- * Migliorare le print usando i colori
-
- * refreshare continuamente lo schermo per far vedere gli update
+ * Migliorare i colori
  
  * creare una barra soprastante che mostri le info di gioco
     (modalità, difficoltà, durata della partita, shortcut per comandi, numeri completati(?))
@@ -27,7 +44,8 @@
  * funzioni variadiche per cogliere gli input del comando (su terminale o da file) 
     (per passare implicitamente argomenti (tipo la variante base))
 
- * Accettare input dal giocatore per giocare
+ * Salvare un gioco in un file separato, e dare la possibilità di riprendere
+ * il gioco da dove lo si ha lasciato.
 
  * FOLLIA: printare una seconda tabella piccola a lato per le annotazioni
  */
@@ -41,13 +59,31 @@
  * 
  * - canc: restore cell to 0
  * 
- * - ctrl+s: save
- * 
  * - ctrl+q: quit
  * 
- * - ctrl+z, ctrl+y = undo, redo
+ * - ctrl+s: save
+ * 
+ * - ctrl+y, ctrl+z = redo, undo
  * 
  * */
+
+ enum KEYS { // Actual ASCII character codes
+    KEY_BACKSPACE = 0x08,
+    KEY_SHIFT_IN = 0x0F,
+    KEY_QUIT = 0x11,    // CTRL+Q
+    KEY_SAVE = 0x13,    // CTRL+S
+    KEY_REDO = 0x19,    // CTRL+Y
+    KEY_UNDO = 0x1A,    // CTRL+Z
+    KEY_ESC = 0x1B,
+    KEY_DEL = 0x7F      // CANC
+ };
+
+ enum ARROWS { // Arbitrary values
+    KEY_UP = -1,
+    KEY_DOWN = -2,
+    KEY_RIGHT = -3,
+    KEY_LEFT = -4
+ };
 
 
 // ============================= DATA STRUCTURES =============================
@@ -60,6 +96,10 @@ typedef struct Cell {
 typedef struct SudokuBoard { 
     Cell *cells[81]; // Whole 9x9 grid
 } SudokuBoard;
+
+typedef struct Cursor {
+    int x,y;
+} Cursor;
 
 
 // =========================== ALLOCATION WRAPPERS =========================
@@ -87,12 +127,31 @@ void *xrealloc(void *oldptr, size_t size) {
 
 // ====================== 1D ARRAY HELPER FUNCTIONS ==========================
 
-/* Transorm a set of x,y coordinates into the corresponding
+/* Transform a set of x,y coordinates into the corresponding
  * index of a monodimensional array representing a 9x9 grid. */
-int coordsToArray(int x, int y) {
-    return x + y*9;
+int coordsToIndex(int x, int y) {
+    return (x-1) + 9*(y-1);
 };
 
+    /* | x1 x2 x3 x4 x5 x6 x7 x8 x9 
+    ---+--------------------------- 
+    y1 | 00 01 02 03 04 05 06 07 08 
+    y2 | 09 10 11 12 13 14 15 16 17 
+    y3 | 18 19 20 21 22 23 24 25 26 
+    y4 | 27 28 29 30 31 32 33 34 35 
+    y5 | 36 37 38 39 40 41 42 43 44 
+    y6 | 45 46 47 48 49 50 51 52 53 
+    y7 | 54 55 56 57 58 59 60 61 62 
+    y8 | 63 64 65 66 67 68 69 70 71 
+    y9 | 72 73 74 75 76 77 78 79 80
+    */
+
+/* This function takes as input an index to transform in a pair of coordinates,
+ * and an interger array to store the coordinates. */
+void indexToCoords(int idx, int* coords) {
+    coords[0] = idx % 9 + 1;
+    coords[1] = idx / 9 + 1;
+};
 
 // ============================= BOARD OBJECTS ============================
 /* Allocate and initialize objects. */
@@ -192,7 +251,7 @@ bool evalSquare(SudokuBoard *sb, int sqr_num) {
 
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-            int idx = coordsToArray(start_col + c, start_row + r);
+            int idx = coordsToIndex(start_col+1 + c, start_row+1 + r);
             buf[counter++] = sb->cells[idx]->i;
         }
     }
@@ -279,6 +338,7 @@ void generateSudoku(SudokuBoard *sb, int mode) {
     // Leave only the desired amount of cells
     int given;
     switch(mode) {
+        case DEBUG: given = 81; break;
         case EASY: given = 33; break;
         case MEDIUM: given = 17; break;
         case HARD: given = 11; break;
@@ -295,7 +355,7 @@ void generateSudoku(SudokuBoard *sb, int mode) {
             to_clear--;
         }
     }
-
+    
     // Set the remaining cells to fixed
     for (int i=0; i < 81; i++) {if (sb->cells[i]->i != 0) sb->cells[i]->isfixed = true;}
 };
@@ -321,40 +381,63 @@ void generateSudoku(SudokuBoard *sb, int mode) {
 #define TAB_NUM 1
 #define TOP_PADDING 1
 /* Print a small version of the board that
- * does not show through ASCII characters
- * which cells are fixed. */
-void printSmallBoard(SudokuBoard *sb) { // FIXME: adapt to use colors for fixed numbers
+ * prints fixed cells in a different color. */
+void printSmallBoard(SudokuBoard *sb, Cursor *cur) {
+    
+    char *row_numbers =   "  x 1 2 3   4 5 6   7 8 9 x\n";
     char *row_separator = "+-------+-------+-------+\n";
     char *tab = "\t";
-    for (int j=0; j<TOP_PADDING; j++) printf("\n");
-    for (int i=0; i<81; i++) {
+    
+    // Top blank lines
+    for (int j0=0; j0<TOP_PADDING; j0++) {
+        printf("\n");
+    }
+
+    for (int j=0; j<81; j++) {
+        Cell *c = sb->cells[j];
         
         // Tab
-        if ((i % 9 == 0)) {for (int j=0; j<TAB_NUM; j++) printf("%s", tab);}
+        if (j % 9 == 0) {for (int j2=0; j2<TAB_NUM; j2++) {printf("%s", tab);}}
 
         // Row separator
-        if (i % (9*3) == 0) {
+        if (j % (9*3) == 0) {
             printf("%s", row_separator);
-            for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+            for (int j2=0; j2<TAB_NUM; j2++) {printf("%s", tab);}
         } 
-    
-        // Column separator
-        if (i*3 % 9 == 0) printf("|");
+
+        // Column separator (+ Column numbers and tab if needed)
+        if (j*3 % 9 == 0) printf("|");
         
-        // Padding and Value
-        if (sb->cells[i]->i == 0) {printf(" _");}
-        else {printf(" %d", ((sb->cells[i]->i) % 10));}
+        // Padding
+        printf(" ");
+
+        // Cursor position (Value and Color)
+        if ((j == coordsToIndex(cur->x, cur->y))) {
+            printf(BACK_COL_WHITE);
+            if (c->i == 0) {printf("_");} 
+            else {
+                if (c->isfixed) {printf("%d", c->i);} // isfixed color formatting
+                else printf("%d", (c->i) % 10); // Value
+            }   
+        // Value (and Color if needed)
+        } else if (c->i == 0) { printf("_");}
+        else {
+            if (c->isfixed) {printf(COL_BLUE); printf("%d", c->i);} // isfixed color formatting
+            else printf("%d", ((c->i) % 10)); // Value
+        }
+        printf("%s", COL_RESET); // color reset
 
         //Padding
-        if (((i+1) % 3 == 0)) printf(" ");
+        if (((j+1) % 3 == 0)) printf(" ");
     
         // Column separator and Newline 
-        if ((i % 9 == 8)) printf("|\n");
+        if ((j % 9 == 8)) printf("|\n");
     }
 
     // Last Row separator
-    for (int j=0; j<TAB_NUM; j++) printf("%s", tab);
+    for (int j0=0; j0<TAB_NUM; j0++) printf("%s", tab);
     printf("%s", row_separator);
+    printf("%s", COL_RESET); // Color reset
     printf("\n");
 };
 
@@ -412,11 +495,14 @@ void printBigBoard(SudokuBoard *sb) {
         // Column separator
         if (i*3 % 9 == 0) printf("|");
         
-        // Value
-        if (sb->cells[i]->i == 0) {printf("  _");}
-        else {printf("  %d", (sb->cells[i]->i));}
+        // Padding
+        printf("  ");
 
-        // isfixed() character and Padding
+        // Value
+        if (sb->cells[i]->i == 0) {printf("_");}
+        else {printf("%d", (sb->cells[i]->i));}
+
+        // isfixed character or Padding
         if (sb->cells[i]->isfixed == true) {printf(".");}
         else {printf(" ");}
 
@@ -437,31 +523,208 @@ void printBigBoard(SudokuBoard *sb) {
     printf("\n");
 };
 
+// ============================ READ USER TERMINAL INPUT ==============================
+
+int readKey(void) {
+    int c = getchar();
+
+    if (c != KEY_ESC) return c;
+
+    /* Le arrow keys ritornano 3 caratteri in fila:
+     * esc, '[' + A/B/C/D. */
+     
+    // Se non è un'arrow, bensì esc, dopo non c'è '['. 
+    if (getchar() != '[') return KEY_ESC;
+
+    switch (getchar()) {
+    case 'A': return KEY_UP;
+    case 'B': return KEY_DOWN;
+    case 'C': return KEY_RIGHT;
+    case 'D':
+    case 'Z': // Shift+Tab
+        return KEY_LEFT;
+    default: return KEY_ESC;
+    }
+}
+
+
+// =========================== CURSOR FUNCTIONS ============================
+
+Cursor *createCursor(int x, int y) {
+    Cursor *cur = xmalloc(sizeof(*cur));
+    cur->x = x;
+    cur->y = y;
+    return cur;
+};
+
+/* This function modifies the cursor's index on the 1D array,
+ * provided the intended direction keeps the cursor inside
+ * the boundaries of the board. */
+void moveCursor(Cursor *cur, int direction) {
+    int idx = coordsToIndex(cur->x, cur->y);
+    int xo = 1;
+    int yo = 9;
+    int new_idx;
+    bool isMovementValid = false;
+
+	switch (direction) {
+    // HORIZONTAL MOVEMENT
+    case KEY_LEFT:
+        xo *= (-1);
+    case KEY_RIGHT:
+        new_idx = idx + xo;
+        // Check if movement doesn't wrap around
+        if (idx / 9 == new_idx / 9) {isMovementValid = true;}
+        break;
+
+    // VERTICAL MOVEMENT
+    case KEY_UP:
+        yo *= (-1);
+    case KEY_DOWN:
+        new_idx = idx + yo; 
+        isMovementValid = true;
+        break;
+    }
+
+    // Edit the cursor's position only if idx belongs to the 9x9 grid.
+    // Wrap-around will not be implemented.
+    if ((0 <= new_idx && new_idx < 81) && isMovementValid) {
+        int new_coords[2];
+        indexToCoords(new_idx, new_coords);
+
+        cur->x = new_coords[0];
+        cur->y = new_coords[1];
+    }
+};
+
+
+// ============================== TERMINAL FUNCTIONS =========================
+
+static struct termios old_termios;
+
+/* Most notably: this function restores canonic mode. */
+void restoreTerminal(void) {
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+}
 
 // ============================= MAIN =============================
 
 int main(int argc, char **argv) {
 
-    // ======================= READ INITIAL INPUT =====================
+    // ============================ READ INITIAL INPUT ===========================
     // read from file
     // read input command line
     // Protoype: sudoku ([--variant]) [--mode]
+    
+
+    // ===================== TL;DR: Don't wait for '\n' to flush =====================
+
+    tcgetattr(STDIN_FILENO, &old_termios);
+    atexit(restoreTerminal);
+
+    struct termios new_termios = old_termios;
+    new_termios.c_lflag &= ~(ICANON | ECHO);
+    new_termios.c_iflag &= ~(IXON);
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
+
+
+    // ============== INITIALIZE THE GAME VARIABLES ================
 
     // Seed rand()
     srand(time(NULL));
 
-    // ============== INITIALIZE THE SUDOKU BOARD ============
     SudokuBoard *sb = createSudokuBoard();
+    
     generateSudoku(sb, EASY);
 
+    int coords[2];
+    Cursor *cur = createCursor(1,1);
 
-    // ============== SHOW THE GAME ON SCREEN ============
-    printBigBoard(sb);
+    bool game = true;
+    bool won = false;
 
+    // ====================== GAME LOOP =======================
+
+    while (game == true) {
+        system("clear");
+        printSmallBoard(sb, cur);
+        
+        int idx = coordsToIndex(cur->x, cur->y);
+        Cell *cell = sb->cells[idx];
+
+        int c = readKey();
+
+        if (('0' <= c && c <= '9')) {
+            if (!cell->isfixed) {cell->i = c - '0';}
+        }
+        else {
+            switch (c) {
+            // MOVEMENT
+            case 'w':
+            case KEY_UP:
+                moveCursor(cur, KEY_UP);
+                break;
+
+            case 'a':
+            case KEY_LEFT:
+                moveCursor(cur, KEY_LEFT);
+                break;
+
+            case 's':
+            case KEY_DOWN:
+            case '\n': // ENTER
+            case '\r': // ENTER
+                moveCursor(cur, KEY_DOWN);
+                break;
+
+            case 'd':
+            case KEY_RIGHT:
+            case '\t': // TAB
+                moveCursor(cur, KEY_RIGHT);
+                break;
+            
+            // COMMANDS // FIXME: implement the missing features
+            case KEY_DEL:
+            case KEY_BACKSPACE:
+                if (!sb->cells[idx]->isfixed) {sb->cells[idx]->i = 0;}
+                break;
+
+            case KEY_QUIT: // CTRL+Q
+                game = false;
+                break;
+
+            case KEY_SAVE: // CTRL+S
+                break;
+
+            case KEY_REDO: // CTRL+Y
+                break;
+
+            case KEY_UNDO: // CTRL+Z
+                break;                
+            }
+        }
+
+        /* PLAYER INPUT;
+        * 
+        * - ctrl+s: save
+        * 
+        * - ctrl+z, ctrl+y = undo, redo
+        * 
+        * */
+
+        if (isSudokuFull(sb) && evalSudoku(sb)) {
+            won = true;
+            game = false;
+        }
+    }
+
+    if (won) printf("You won!\n");
 
     // ============== SIVALLETTO SEQUENCE ============
-    // Destroy the sudoku board
+
+    free(cur);
     destroySudokuBoard(sb);
 
-    return 0;
+    return 0; // atexit() will run automatically
 }
