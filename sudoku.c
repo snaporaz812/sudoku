@@ -6,7 +6,7 @@
 #include <time.h> // rand()
 #include <termios.h>
 #include <unistd.h> // usleep()
-
+#include <assert.h>
 
 
 // DIFFICULTY SETTINGS
@@ -18,9 +18,12 @@ enum MODES {
     DEBUG = 255
 };
 
-// VARIANT
-// normal
-// knopki
+enum VARIANT {
+    CLASSIC,
+    KLOPKI,
+    KILLER
+};
+
 
 // ANSI TERMINAL COLOR ESCAPE SEQUENCES
 #define COL_RESET "\x1b[0m"
@@ -31,7 +34,8 @@ enum MODES {
 /* BREAKDOWN: \x1b [ (xx; t; r;g;b) m
  * xx: foreground (38) or background(48)
  * t: 24-bit true color mode (2) --> allows RGB
- * r, g, b: each go from 0-255 <-- COLOR */
+ * r, g, b: each go from 0-255 <-- COLOR
+*/
 
 
 /* -------------- TO DO --------------
@@ -45,10 +49,12 @@ enum MODES {
     (per passare implicitamente argomenti (tipo la variante base))
 
  * Salvare un gioco in un file separato, e dare la possibilità di riprendere
- * il gioco da dove lo si ha lasciato.
+    il gioco da dove lo si ha lasciato.
+
+ * Continuare le funzioni per ctrl+z e ctrl+y
 
  * FOLLIA: printare una seconda tabella piccola a lato per le annotazioni
- */
+*/
 
 /* PLAYER INPUT;
  *
@@ -64,10 +70,9 @@ enum MODES {
  * - ctrl+s: save
  * 
  * - ctrl+y, ctrl+z = redo, undo
- * 
- * */
+*/
 
- enum KEYS { // Actual ASCII character codes
+enum KEYS { // Actual ASCII character codes
     KEY_BACKSPACE = 0x08,
     KEY_SHIFT_IN = 0x0F,
     KEY_QUIT = 0x11,    // CTRL+Q
@@ -76,21 +81,22 @@ enum MODES {
     KEY_UNDO = 0x1A,    // CTRL+Z
     KEY_ESC = 0x1B,
     KEY_DEL = 0x7F      // CANC
- };
+};
 
- enum ARROWS { // Arbitrary values
+enum ARROWS { // Arbitrary values
     KEY_UP = -1,
     KEY_DOWN = -2,
     KEY_RIGHT = -3,
     KEY_LEFT = -4
- };
+};
 
 
 // ============================= DATA STRUCTURES =============================
 
 typedef struct Cell {
-    int i;          // Cell's value
-    bool isfixed;   // If true, i cannot be modified by the player
+    int i;         // Cell's value
+    bool isfixed;  // If true, i cannot be modified by the player
+
 } Cell;
 
 typedef struct SudokuBoard { 
@@ -99,7 +105,26 @@ typedef struct SudokuBoard {
 
 typedef struct Cursor {
     int x,y;
+    int idx;
 } Cursor;
+
+typedef struct Move {
+    int idx;
+    int oldv, newv; // old and new cell's value
+} Move;
+
+typedef struct MoveHistory {
+    struct Move **moves;
+    size_t len; 
+} MoveHistory;
+
+typedef struct SaveState {
+    int mode;
+    int variant;
+    long time_elapsed;
+    SudokuBoard *sb;
+    MoveHistory *mh;
+} SaveState;
 
 
 // =========================== ALLOCATION WRAPPERS =========================
@@ -133,18 +158,18 @@ int coordsToIndex(int x, int y) {
     return (x-1) + 9*(y-1);
 };
 
-    /* | x1 x2 x3 x4 x5 x6 x7 x8 x9 
-    ---+--------------------------- 
-    y1 | 00 01 02 03 04 05 06 07 08 
-    y2 | 09 10 11 12 13 14 15 16 17 
-    y3 | 18 19 20 21 22 23 24 25 26 
-    y4 | 27 28 29 30 31 32 33 34 35 
-    y5 | 36 37 38 39 40 41 42 43 44 
-    y6 | 45 46 47 48 49 50 51 52 53 
-    y7 | 54 55 56 57 58 59 60 61 62 
-    y8 | 63 64 65 66 67 68 69 70 71 
-    y9 | 72 73 74 75 76 77 78 79 80
-    */
+/* | x1 x2 x3 x4 x5 x6 x7 x8 x9 
+---+--------------------------- 
+y1 | 00 01 02 03 04 05 06 07 08 
+y2 | 09 10 11 12 13 14 15 16 17 
+y3 | 18 19 20 21 22 23 24 25 26 
+y4 | 27 28 29 30 31 32 33 34 35 
+y5 | 36 37 38 39 40 41 42 43 44 
+y6 | 45 46 47 48 49 50 51 52 53 
+y7 | 54 55 56 57 58 59 60 61 62 
+y8 | 63 64 65 66 67 68 69 70 71 
+y9 | 72 73 74 75 76 77 78 79 80
+*/
 
 /* This function takes as input an index to transform in a pair of coordinates,
  * and an interger array to store the coordinates. */
@@ -153,7 +178,7 @@ void indexToCoords(int idx, int* coords) {
     coords[1] = idx / 9 + 1;
 };
 
-// ============================= BOARD OBJECTS ============================
+// ================================ BOARD OBJECTS ============================
 /* Allocate and initialize objects. */
 
 Cell *createCell(int value, bool isfixed) {
@@ -186,6 +211,54 @@ void destroySudokuBoard(SudokuBoard *sb) {
     free(sb);
 };
 
+// =========================== MOVE-HISTORY OBJECTS AND FUNCTIONS ===========================
+
+MoveHistory *createMoveHistory(void) { // It would make sense to pass the sudokuboard as an argument
+    MoveHistory *mh = xmalloc(sizeof(*mh));
+    mh->moves = NULL;
+    mh->len = 0; 
+    return mh;
+};
+
+void destroyMoveHistory(MoveHistory *mh) {
+    for (int i=0; i < mh->len + 1; i++) mh->moves[i] = NULL;
+    free(mh->moves);
+    mh->moves = NULL;
+    free(mh);
+};
+
+Move *recordMove(int idx, Cell *cell, int newvalue) {
+    Move *m = xmalloc(sizeof(*m));
+    m->idx = idx;
+    m->oldv = cell->i;
+    m->newv = newvalue;
+    return m;
+};
+
+void pushMove(MoveHistory *mh, Move *m) {
+    Move **new_moves = xrealloc(mh->moves, sizeof(Move*) * (mh->len + 1));
+    if (!new_moves) {
+        fprintf(stderr, "Error pushing a move to the move record.");
+        exit(1);
+    }
+    mh->moves = new_moves;
+    mh->moves[mh->len] = m;
+    mh->len++;
+};
+
+void overwriteMove(MoveHistory *mh, Move *m, int moves_idx) {
+    assert(mh->len > 0);
+
+    // Overwrite move in "moves" array
+    mh->moves[moves_idx] = m;
+
+    // Delete following moves
+    for (int i = moves_idx + 1; i < mh->len + 1; i++) mh->moves[i] = NULL;
+
+    // Set new len
+    mh->len = moves_idx + 1;
+};
+
 
 // ======================= SUDOKU-OBJECT EVALUATION FUNCTIONS =======================
 
@@ -193,7 +266,7 @@ void destroySudokuBoard(SudokuBoard *sb) {
  * contains repetitions of the same number.
  * Return values: true if array contains repetitions, false otherwise. */
 bool isValid(int *a) {
-    for (int i=0; i<9; i++) { //FIXME: O(n^2)
+    for (int i=0; i<9; i++) {
         if (a[i] == 0) continue; // Ignore empty cells 
         for (int j = i+1; j<9; j++) {
             if (a[i] == a[j]) return false;
@@ -597,6 +670,42 @@ void moveCursor(Cursor *cur, int direction) {
     }
 };
 
+// ========================== PLAYER COMMANDS FUNCTIONS ============================
+
+/* //FIXME
+
+void undoMove(SudokuBoard *sb, MoveHistory *mh) {};
+void redoMove(SudokuBoard *sb, MoveHistory *mh) {};
+*/
+
+//* Variables to be saved: SudokuBoard, MoveHistory, MODE, VARIANT, elapsed time.
+
+SaveState *createSaveState(SudokuBoard *sb, MoveHistory *mh, int mode,
+                           int variant) { //FIXME: move to an appropriate position
+    SaveState *s = xmalloc(sizeof(*s));
+    s->sb = sb;
+    s->mh = mh; 
+    s->mode = mode;
+    s->variant = variant;
+    //s->time_elapsed = time_elapsed; //FIXME: implement time
+    
+    return s;
+}; 
+
+/* Save gamestate into a file to allow the player to continue later
+ * without losing progress.
+ * Variables to be saved: SudokuBoard, MoveHistory, MODE, VARIANT, elapsed time.
+ * Return values: true is game was saved successfully, false otherwise.
+*/
+bool saveGame(SaveState *s, SudokuBoard *sb, MoveHistory *mh) { //FIXME
+    s->sb = sb;
+    s->mh = mh;
+    //s->time_elapsed = time_elapsed; //FIXME: implement time 
+    return true; // Game saved successfully
+    return false; // Game couldn't be saved
+};
+
+
 
 // ============================== TERMINAL FUNCTIONS =========================
 
@@ -607,14 +716,27 @@ void restoreTerminal(void) {
     tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
 }
 
-// ============================= MAIN =============================
+// ================================= MAIN =================================
 
 int main(int argc, char **argv) {
 
+    if (true) {
+        fprintf(stderr,
+                "Usage:\n\tStart new game: %s ([--variant]) [--mode]\n\tContinue game: %s continue (<savefile>)\n",
+                *argv, *argv);
+        return 1;
+    }
+
     // ============================ READ INITIAL INPUT ===========================
+    //FILE *fp = fopen()
+    
     // read from file
     // read input command line
-    // Protoype: sudoku ([--variant]) [--mode]
+
+    /* ----- Protoypes: -----
+     * NEW GAME: sudoku ([--variant]) [--mode]
+     * CONTINUE: sudoku continue (<savefile>)
+     * ---------------------- */
     
 
     // ===================== TL;DR: Don't wait for '\n' to flush =====================
@@ -631,12 +753,24 @@ int main(int argc, char **argv) {
 
     // ============== INITIALIZE THE GAME VARIABLES ================
 
+    //---- Read from user input file/command ---- FIXME: catch them from user input
+    int mode = EASY; 
+    int variant = CLASSIC; 
+
+    //long long elapsed_time; // if present in file, use variable from file. Else, initialize new
+    //-------------------------------------------
+
     // Seed rand()
     srand(time(NULL));
 
     SudokuBoard *sb = createSudokuBoard();
+    MoveHistory *mh = createMoveHistory();
+    SaveState *s = createSaveState(sb, mh, mode, variant); // FIXME: devo capire come cazzo sistemare il savefiles
     
-    generateSudoku(sb, EASY);
+    // if (è stata scelta la modalità new game)
+    generateSudoku(sb, mode);
+    // else (è stata scelta la modalità continue)
+    // loadSaveState(file);
 
     int coords[2];
     Cursor *cur = createCursor(1,1);
@@ -649,6 +783,12 @@ int main(int argc, char **argv) {
     while (game == true) {
         system("clear");
         printSmallBoard(sb, cur);
+
+        if (isSudokuFull(sb) && evalSudoku(sb)) {
+            won = true;
+            game = false;
+            break;
+        }
         
         int idx = coordsToIndex(cur->x, cur->y);
         Cell *cell = sb->cells[idx];
@@ -695,6 +835,13 @@ int main(int argc, char **argv) {
                 break;
 
             case KEY_SAVE: // CTRL+S
+                createSaveState(sb, mh, mode, variant);
+                if (saveGame(s, sb, mh)) { // FIXME: implement time
+                    printf("Game saved successfully!\n");
+                } else { //FIXME: cornuto e mazziato while saving
+                    fprintf(stderr, "Error while saving the game.\n");
+                    return 1;
+                }
                 break;
 
             case KEY_REDO: // CTRL+Y
@@ -713,10 +860,6 @@ int main(int argc, char **argv) {
         * 
         * */
 
-        if (isSudokuFull(sb) && evalSudoku(sb)) {
-            won = true;
-            game = false;
-        }
     }
 
     if (won) printf("You won!\n");
