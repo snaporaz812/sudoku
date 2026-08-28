@@ -3,39 +3,10 @@
 #include <stdlib.h>  
 #include <stdarg.h>
 #include <string.h> // strcmp()
-#include <time.h> // rand()
+#include <time.h>   // rand()
 #include <termios.h>
 #include <unistd.h> // usleep()
 #include <assert.h>
-
-
-// DIFFICULTY SETTINGS
-enum MODES {
-    EASY,
-    MEDIUM,
-    HARD,
-    CRAZY,
-    DEBUG = 255
-};
-
-enum VARIANT {
-    CLASSIC,
-    KLOPKI,
-    KILLER
-};
-
-
-// ANSI TERMINAL COLOR ESCAPE SEQUENCES
-#define COL_RESET "\x1b[0m"
-#define COL_BLUE "\x1b[38;2;0;0;255m"
-#define COL_BLACK "\x1b[38;2;0;0;0m" 
-#define BACK_COL_BLUE "\x1b[48;2;0;0;255m"
-#define BACK_COL_WHITE "\x1b[48;2;255;255;255m"
-/* BREAKDOWN: \x1b [ (xx; t; r;g;b) m
- * xx: foreground (38) or background(48)
- * t: 24-bit true color mode (2) --> allows RGB
- * r, g, b: each go from 0-255 <-- COLOR
-*/
 
 
 /* -------------- TO DO --------------
@@ -56,10 +27,40 @@ enum VARIANT {
  * FOLLIA: printare una seconda tabella piccola a lato per le annotazioni
 */
 
+
+// ANSI TERMINAL COLOR ESCAPE SEQUENCES
+#define COL_RESET "\x1b[0m"
+#define COL_BLUE "\x1b[38;2;0;0;255m"
+#define COL_BLACK "\x1b[38;2;0;0;0m" 
+#define BACK_COL_BLUE "\x1b[48;2;0;0;255m"
+#define BACK_COL_WHITE "\x1b[48;2;255;255;255m"
+/* BREAKDOWN: \x1b [ (xx; t; r;g;b) m
+ * xx: foreground (38) or background(48)
+ * t: 24-bit true color mode (2) --> allows RGB
+ * r, g, b: each go from 0-255 <-- COLOR
+*/
+
+
+// DIFFICULTY SETTINGS
+enum MODES {
+    EASY,
+    MEDIUM,
+    HARD,
+    CRAZY,
+    DEBUG = 255
+};
+
+// SUDOKU VARIANT 
+enum VARIANT {
+    CLASSIC,
+    KLOPKI,
+    KILLER
+};
+
 /* PLAYER INPUT;
  *
  * - either WASD or arrows: move through the sudoku cells
- * -- tab, shift+tab: move sideways; enter, shift+enter: move vertically
+ * -- tab / shift+tab: move sideways; enter / shift+enter: move vertically
  * 
  * - numbers: input numbers
  * 
@@ -105,7 +106,7 @@ typedef struct SudokuBoard {
 
 typedef struct Cursor {
     int x,y;
-    int idx;
+    //int idx; // fixme: non avrebbe senso togliere la classe Cursor e usare solo idx?
 } Cursor;
 
 typedef struct Move {
@@ -114,8 +115,9 @@ typedef struct Move {
 } Move;
 
 typedef struct MoveHistory {
+    int current_idx; // Current move in the "moves" array
     struct Move **moves;
-    size_t len; 
+    int len;
 } MoveHistory;
 
 typedef struct SaveState {
@@ -158,6 +160,13 @@ int coordsToIndex(int x, int y) {
     return (x-1) + 9*(y-1);
 };
 
+/* This function takes as input an index to transform in a pair of coordinates,
+ * and an interger array to store the coordinates. */
+void indexToCoords(int idx, int* coords) {
+    coords[0] = idx % 9 + 1;
+    coords[1] = idx / 9 + 1;
+};
+
 /* | x1 x2 x3 x4 x5 x6 x7 x8 x9 
 ---+--------------------------- 
 y1 | 00 01 02 03 04 05 06 07 08 
@@ -170,13 +179,6 @@ y7 | 54 55 56 57 58 59 60 61 62
 y8 | 63 64 65 66 67 68 69 70 71 
 y9 | 72 73 74 75 76 77 78 79 80
 */
-
-/* This function takes as input an index to transform in a pair of coordinates,
- * and an interger array to store the coordinates. */
-void indexToCoords(int idx, int* coords) {
-    coords[0] = idx % 9 + 1;
-    coords[1] = idx / 9 + 1;
-};
 
 // ================================ BOARD OBJECTS ============================
 /* Allocate and initialize objects. */
@@ -217,16 +219,22 @@ MoveHistory *createMoveHistory(void) { // It would make sense to pass the sudoku
     MoveHistory *mh = xmalloc(sizeof(*mh));
     mh->moves = NULL;
     mh->len = 0; 
+    mh->current_idx = (-1); // FIXME: not sure about this, as there is no element yet
     return mh;
 };
 
+/* Destroy the move history, move by move. */
 void destroyMoveHistory(MoveHistory *mh) {
-    for (int i=0; i < mh->len + 1; i++) mh->moves[i] = NULL;
+    if (!mh) return;
+    for (int i=0; i < mh->len; i++) {
+        if (mh->moves[i]) free(mh->moves[i]);
+    }
     free(mh->moves);
     mh->moves = NULL;
     free(mh);
 };
 
+/* Create a Move instance and initialize its values. */
 Move *recordMove(int idx, Cell *cell, int newvalue) {
     Move *m = xmalloc(sizeof(*m));
     m->idx = idx;
@@ -235,6 +243,7 @@ Move *recordMove(int idx, Cell *cell, int newvalue) {
     return m;
 };
 
+/* Append the new move as the latest element of the move history. */
 void pushMove(MoveHistory *mh, Move *m) {
     Move **new_moves = xrealloc(mh->moves, sizeof(Move*) * (mh->len + 1));
     if (!new_moves) {
@@ -244,20 +253,26 @@ void pushMove(MoveHistory *mh, Move *m) {
     mh->moves = new_moves;
     mh->moves[mh->len] = m;
     mh->len++;
+    mh->current_idx = mh->len-1;
 };
 
+/* Substitute an old move in the move history with a new move,
+ * then delete all the moves that followed the old move. 
 void overwriteMove(MoveHistory *mh, Move *m, int moves_idx) {
     assert(mh->len > 0);
 
     // Overwrite move in "moves" array
     mh->moves[moves_idx] = m;
 
-    // Delete following moves
+    // Delete any following moves
     for (int i = moves_idx + 1; i < mh->len + 1; i++) mh->moves[i] = NULL;
+
+    // Set current index to latest element
+    mh->current_idx = moves_idx;
 
     // Set new len
     mh->len = moves_idx + 1;
-};
+};*/
 
 
 // ======================= SUDOKU-OBJECT EVALUATION FUNCTIONS =======================
@@ -362,7 +377,6 @@ void shuffle (int *a, int len) {
         int lorem = a[i];
         a[i] = a[rn];
         a[rn] = lorem;
-
     }
 };
 
@@ -457,7 +471,7 @@ void generateSudoku(SudokuBoard *sb, int mode) {
  * prints fixed cells in a different color. */
 void printSmallBoard(SudokuBoard *sb, Cursor *cur) {
     
-    char *row_numbers =   "  x 1 2 3   4 5 6   7 8 9 x\n";
+    //char *row_numbers =   "  x 1 2 3   4 5 6   7 8 9 x\n";
     char *row_separator = "+-------+-------+-------+\n";
     char *tab = "\t";
     
@@ -542,9 +556,8 @@ void printSmallBoard(SudokuBoard *sb, Cursor *cur) {
      * * * * * * * * * * */
 
 
-/* Print a version of the board that shows
- * explicitely which cells are fixed thanks
- * to ASCII characters. */     
+/* Print a version of the board that shows explicitely
+ * which cells are fixed by means of ASCII characters. */     
 void printBigBoard(SudokuBoard *sb) {
     char *row_separator = "+-------------+-------------+-------------+\n";
     char *row_spacing = "|             |             |             |\n";
@@ -603,10 +616,10 @@ int readKey(void) {
 
     if (c != KEY_ESC) return c;
 
-    /* Le arrow keys ritornano 3 caratteri in fila:
+    /* Arrow keys return 3 characters in a row:
      * esc, '[' + A/B/C/D. */
      
-    // Se non è un'arrow, bensì esc, dopo non c'è '['. 
+    // If its not an arrow (that is, ESC), it is not followed by '['. 
     if (getchar() != '[') return KEY_ESC;
 
     switch (getchar()) {
@@ -630,6 +643,13 @@ Cursor *createCursor(int x, int y) {
     return cur;
 };
 
+void setCursorIdx(Cursor *cur, int idx) {
+    int new_coords[2];
+    indexToCoords(idx, new_coords);
+    cur->x = new_coords[0];
+    cur->y = new_coords[1];
+};
+
 /* This function modifies the cursor's index on the 1D array,
  * provided the intended direction keeps the cursor inside
  * the boundaries of the board. */
@@ -647,7 +667,7 @@ void moveCursor(Cursor *cur, int direction) {
     case KEY_RIGHT:
         new_idx = idx + xo;
         // Check if movement doesn't wrap around
-        if (idx / 9 == new_idx / 9) {isMovementValid = true;}
+        if (idx / 9 == new_idx / 9) isMovementValid = true;
         break;
 
     // VERTICAL MOVEMENT
@@ -661,25 +681,35 @@ void moveCursor(Cursor *cur, int direction) {
 
     // Edit the cursor's position only if idx belongs to the 9x9 grid.
     // Wrap-around will not be implemented.
-    if ((0 <= new_idx && new_idx < 81) && isMovementValid) {
-        int new_coords[2];
-        indexToCoords(new_idx, new_coords);
-
-        cur->x = new_coords[0];
-        cur->y = new_coords[1];
-    }
+    if ((0 <= new_idx && new_idx < 81) && isMovementValid) setCursorIdx(cur, new_idx);
 };
+
 
 // ========================== PLAYER COMMANDS FUNCTIONS ============================
 
-/* //FIXME
+void undoMove(SudokuBoard *sb, MoveHistory *mh, Cursor *cur) {
+    if (mh->current_idx < 0) return; // There is no prior move in history
 
-void undoMove(SudokuBoard *sb, MoveHistory *mh) {};
-void redoMove(SudokuBoard *sb, MoveHistory *mh) {};
-*/
+    Move *m = mh->moves[mh->current_idx];
+    sb->cells[m->idx]->i = m->oldv; // Apply old value back to board
+    setCursorIdx(cur, m->idx);      // Make cursor follow the move
 
-//* Variables to be saved: SudokuBoard, MoveHistory, MODE, VARIANT, elapsed time.
+    mh->current_idx--;
+};
 
+void redoMove(SudokuBoard *sb, MoveHistory *mh, Cursor *cur) {
+    if (mh->current_idx >= mh->len -1) return; // There is no further move in history
+
+    mh->current_idx++;
+
+    Move *m = mh->moves[mh->current_idx];
+    sb->cells[m->idx]->i = m->newv; // Apply newer value to cell 
+    setCursorIdx(cur, m->idx);      // Make cursor follow the move
+};
+
+
+/* Create a SaveState object that stores the current game's data.
+ * Variables to be saved: SudokuBoard, MoveHistory, MODE, VARIANT, elapsed time. */
 SaveState *createSaveState(SudokuBoard *sb, MoveHistory *mh, int mode,
                            int variant) { //FIXME: move to an appropriate position
     SaveState *s = xmalloc(sizeof(*s));
@@ -690,7 +720,7 @@ SaveState *createSaveState(SudokuBoard *sb, MoveHistory *mh, int mode,
     //s->time_elapsed = time_elapsed; //FIXME: implement time
     
     return s;
-}; 
+};
 
 /* Save gamestate into a file to allow the player to continue later
  * without losing progress.
@@ -706,7 +736,6 @@ bool saveGame(SaveState *s, SudokuBoard *sb, MoveHistory *mh) { //FIXME
 };
 
 
-
 // ============================== TERMINAL FUNCTIONS =========================
 
 static struct termios old_termios;
@@ -720,12 +749,16 @@ void restoreTerminal(void) {
 
 int main(int argc, char **argv) {
 
-    if (true) {
+    if (argc < 2) { // FIXME
         fprintf(stderr,
                 "Usage:\n\tStart new game: %s ([--variant]) [--mode]\n\tContinue game: %s continue (<savefile>)\n",
                 *argv, *argv);
         return 1;
     }
+
+    //parse
+    //if: file -> load
+    //else: new game with user-given variables 
 
     // ============================ READ INITIAL INPUT ===========================
     //FILE *fp = fopen()
@@ -745,7 +778,7 @@ int main(int argc, char **argv) {
     atexit(restoreTerminal);
 
     struct termios new_termios = old_termios;
-    new_termios.c_lflag &= ~(ICANON | ECHO);
+    new_termios.c_lflag &= ~(ICANON | ECHO | ISIG);
     new_termios.c_iflag &= ~(IXON);
 
     tcsetattr(STDIN_FILENO, TCSANOW, &new_termios);
@@ -765,8 +798,8 @@ int main(int argc, char **argv) {
 
     SudokuBoard *sb = createSudokuBoard();
     MoveHistory *mh = createMoveHistory();
-    SaveState *s = createSaveState(sb, mh, mode, variant); // FIXME: devo capire come cazzo sistemare il savefiles
-    
+    //SaveState *s = createSaveState(sb, mh, mode, variant); // FIXME: devo capire come cazzo sistemare il savefiles
+    SaveState *s = NULL;
     // if (è stata scelta la modalità new game)
     generateSudoku(sb, mode);
     // else (è stata scelta la modalità continue)
@@ -792,13 +825,19 @@ int main(int argc, char **argv) {
         
         int idx = coordsToIndex(cur->x, cur->y);
         Cell *cell = sb->cells[idx];
+        Move *m = NULL;
 
         int c = readKey();
 
+        // Input = digit
         if (('0' <= c && c <= '9')) {
-            if (!cell->isfixed) {cell->i = c - '0';}
-        }
-        else {
+            if (!cell->isfixed) {
+                m = recordMove(idx, cell, c);
+                cell->i = c - '0';
+                if (m) pushMove(mh, m);
+            }
+        } else {
+            // Input = key
             switch (c) {
             // MOVEMENT
             case 'w':
@@ -827,7 +866,11 @@ int main(int argc, char **argv) {
             // COMMANDS // FIXME: implement the missing features
             case KEY_DEL:
             case KEY_BACKSPACE:
-                if (!sb->cells[idx]->isfixed) {sb->cells[idx]->i = 0;}
+                if (!cell->isfixed) {
+                    m = recordMove(idx, cell, 0);
+                    cell->i = 0;
+                    if (m) pushMove(mh, m);
+                }
                 break;
 
             case KEY_QUIT: // CTRL+Q
@@ -835,7 +878,7 @@ int main(int argc, char **argv) {
                 break;
 
             case KEY_SAVE: // CTRL+S
-                createSaveState(sb, mh, mode, variant);
+                s = createSaveState(sb, mh, mode, variant);
                 if (saveGame(s, sb, mh)) { // FIXME: implement time
                     printf("Game saved successfully!\n");
                 } else { //FIXME: cornuto e mazziato while saving
@@ -845,29 +888,26 @@ int main(int argc, char **argv) {
                 break;
 
             case KEY_REDO: // CTRL+Y
+                redoMove(sb, mh, cur);
                 break;
-
             case KEY_UNDO: // CTRL+Z
+                undoMove(sb, mh, cur);
                 break;                
             }
         }
-
-        /* PLAYER INPUT;
-        * 
-        * - ctrl+s: save
-        * 
-        * - ctrl+z, ctrl+y = undo, redo
-        * 
-        * */
-
     }
 
-    if (won) printf("You won!\n");
+    if (won) {
+        printf("You won!\n");
+        scanf("Press any key to close the program.\n");
+    }
 
     // ============== SIVALLETTO SEQUENCE ============
 
+    free(s);
     free(cur);
     destroySudokuBoard(sb);
+    destroyMoveHistory(mh);
 
     return 0; // atexit() will run automatically
 }
