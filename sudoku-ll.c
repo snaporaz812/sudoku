@@ -121,37 +121,56 @@ typedef struct Cursor {
 */
 
 // ---- Move History structures ----
-
+/*
 typedef struct Move {
     uint8_t idx;
     int8_t oldv, newv; // old and new cell's value
 } Move;
 
 typedef struct MoveHistory {
+    struct Move **moves;
     int32_t current_idx; // Current move in the "moves" array
     int32_t len;
-    struct Move **moves;
 } MoveHistory;
+*/
+
+// Test with linked list
+typedef struct Move {
+    uint8_t idx;
+    int8_t oldv, newv;
+    struct Move *previous;
+    struct Move *next;
+} Move;
+
 
 // ---- Savefile management structures ----
 
+/*
 typedef struct SaveState {
-    uint8_t mode;
-    uint8_t variant;
     int64_t time_elapsed;
     SudokuBoard *sb;
     MoveHistory *mh;
+    int32_t mode;
+    int32_t variant;
+} SaveState;
+*/
+
+// Test with linked lists
+typedef struct SaveState {
+    int32_t mode;
+    int32_t variant;
+    int64_t time_elapsed;
+    SudokuBoard *sb;
+    Move **history_node;
 } SaveState;
 
-typedef struct ParsedSaveData {
-    uint8_t mode, variant;
+typedef struct InputTxt {
     int64_t time_elapsed;
-    uint8_t values[81];
-    uint8_t fixed[81];
-    int32_t current_idx;
-    uint32_t nmoves;
-    Move **moves;    
-} ParsedSaveData;
+    int32_t mode;
+    int32_t variant;
+    int8_t values[81];
+    bool  isfixed[81];
+} InputTxt;
 
 
 // =========================== ALLOCATION WRAPPERS =========================
@@ -239,7 +258,7 @@ void destroySudokuBoard(SudokuBoard *sb) {
 };
 
 // =========================== MOVE-HISTORY OBJECTS AND FUNCTIONS ===========================
-
+/*
 MoveHistory *createMoveHistory(void) { // It would make sense to pass the sudokuboard as an argument
     MoveHistory *mh = xmalloc(sizeof(*mh));
     mh->moves = NULL;
@@ -248,7 +267,7 @@ MoveHistory *createMoveHistory(void) { // It would make sense to pass the sudoku
     return mh;
 };
 
-/* Destroy the move history, move by move. */
+// Destroy the move history, move by move.
 void destroyMoveHistory(MoveHistory *mh) {
     if (!mh) return;
     for (int i=0; i < mh->len; i++) {
@@ -258,8 +277,26 @@ void destroyMoveHistory(MoveHistory *mh) {
     mh->moves = NULL;
     free(mh);
 };
+*/
 
-/* Create a Move instance and initialize its values. */
+// Create a Move node of the Move History linked list.
+Move *createMove(int idx, int oldv, int newv, Move *previous_move) {
+    Move *m = xmalloc(sizeof(*m));
+    m->idx = idx;
+    m->oldv = oldv;
+    m->newv = newv;
+
+    // Link move to previous
+    previous_move->next = m;
+    m->previous = previous_move;
+    m->next = NULL;
+    
+    return m;
+};
+
+
+
+// Create a Move instance and initialize its values.
 Move *recordMove(int idx, Cell *cell, int newvalue) {
     Move *m = xmalloc(sizeof(*m));
     m->idx = idx;
@@ -721,257 +758,41 @@ SaveState *createSaveState(SudokuBoard *sb, MoveHistory *mh, int mode,
  * Variables to be saved: SudokuBoard, MoveHistory, MODE, VARIANT, elapsed time.
  * Return values: true is game was saved successfully, false otherwise.
 */
-bool saveGame(SaveState *s, char *filepath) { //FIXME
+bool saveGame(SaveState *s, SudokuBoard *sb, MoveHistory *mh, char *filepath) { //FIXME
     FILE *fp = fopen(filepath, "w");
 
     if (!fp) return false;
 
-    // --- Save SudokuBoard ---
     // Save SudokuBoard number values
-    for (int i=0; i < 81; i++) {
-        fprintf(fp, "%d", s->sb->cells[i]->i);
-        if (i % 9 == 0) fprintf(fp, "\n");
-    }
+    for (int i=0; i < 81; i++) fprintf(fp, "%d", s->sb->cells[i]->i);
     fprintf(fp, "\n");
 
     // Save SudokuBoard isfixed values
     for (int i=0; i < 81; i++) {
         int value = 0;
-        if (s->sb->cells[i]->isfixed) value = 1;
+        if (sb->cells[i]->isfixed) value = 1;
         fprintf(fp, "%d", value);
-        if (i % 9 == 0) fprintf(fp, "\n");
     }
     fprintf(fp, "\n");
 
     // Save Mode & Variant
-    fprintf(fp, "%d %d\n", s->mode, s->variant);
+    fprintf(fp, "%d%d\n", s->mode, s->variant);
 
     // Save Elapsed time
     //s->time_elapsed = time_elapsed; //FIXME: implement time 
 
-    // --- Save MoveHistory ---
-    // Save MoveHistory data
-    fprintf(fp, "%d %d\n", s->mh->current_idx, s->mh->len);
-
-    // Save Moves (if any)
-    for (int i=0; i < s->mh->len; i++) {
-        if (s->mh->moves[i]) {
-            Move *m = s->mh->moves[i];
-            fprintf(fp, "%d %d %d\n", m->idx, m->oldv, m->newv);
-        }
-    }
-    fprintf(fp, "\n");
-
+    // Save MoveHistory
+    
 
     return true; // Game saved successfully
 };
 
-// ============================== PARSING SAVE FILE ============================== 
-// TODO: sposta gli elementi di questa sezione nei rispettivi posti giusti
+// ============================== PARSING ============================== 
 
-typedef struct Parser {
-    char *script;
-    char *next;     // --> Next token to be parsed
-    uint32_t line, col; 
-} Parser;
-
-Parser *createParser(char *script) {
-    Parser *par = xmalloc(sizeof(*par));
-
-    par->script = script;
-    par->next = script;
-
-    par->line = 1;
-    par->col = 1;
-
-    return par;
+void parse(char *cmd) {
+    return;
 };
 
-void advance(Parser *par) {
-    par->next++;
-    par->col++;
-}
-
-// Skip newlines, comments, spaces, and the likes.
-void skipTrivia(Parser *par) {
-    while (1) {
-        while (par->next[0] && (isspace((unsigned char)par->next[0]) || par->next[0] == '%')) {
-
-            // Skip comments
-            if (par->next[0] == '%') {
-                while (par->next[0] && par->next[0] != '\n') advance(par);
-                continue;
-            }
-
-            // Skip blanks and newlines
-            if (par->next[0] == '\n') {
-                par->next++;
-                par->col = 1;
-                par->line++;
-            } else advance(par);
-
-        }
-
-        break;
-    }
-};
-
-/* This function accepts a Parser object and returns the parsed integer value if the function
- * executes corretly, In case of error, -2 is returned (number is either less than -1 or too big). */
-/*
-#define MAX_NUM_LEN 18
-int64_t *parseInt(Parser *par) { //FIXME: return array of numbers (digits) instead of a big number
-    int64_t token = -2; // Check-value in case of errors
-
-    bool neg = false;
-    if (par->next[0] == '-' && isdigit(par->next[1])) {
-        neg = true;
-        advance(par);
-    }
-
-    else if (!isdigit((unsigned char)*par->next)) {return token;}
-
-    char buf[MAX_NUM_LEN + 1];
-    char *start = par->next;
-    char *end;
-    
-    while (isdigit((unsigned char)par->next[0])) {
-        advance(par);
-    }
-
-    end = par->next;
-
-    size_t numlen = end - start;
-    
-    if (numlen < 1 || numlen > MAX_NUM_LEN) return token;
-
-    memcpy(buf, start, numlen);
-    buf[numlen] = 0;
-
-    //token = atoi(buf);
-    token = strtoll(buf, NULL, 10);
-
-    // Convert to negative if needed
-    token = neg ? -token : token;
-
-    return token;
-};
-*/
-
-#define MAX_NUM_LEN 18
-char *parseInt(Parser *par, char *buf) {
-/* TODO:
-Rewrite this function so that it returns a string instead of a number.
-the string should then be translated into a number (in the parse function):
-int_value = char_value - '0'; //Somehow it works 
-*/
-    size_t n = 0;
-
-    if (par->next[0] == '-' && isdigit(par->next[1])) {
-        buf[n] = '-';
-        n++;
-        advance(par);
-    } else if (!isdigit((unsigned char)*par->next)) return NULL; // Not a number
-
-    size_t digits = 0;
-    while (isdigit((unsigned char)par->next[0])) {
-        if (digits == MAX_NUM_LEN) return NULL; // Number is too big
-        buf[n] = par->next[0];
-        n++;
-        digits++;
-        advance(par);
-    }
-    buf[n] = 0;
-    
-    return buf;
-}
-
-/* Parses data about the SudokuBoard (cell number values and cell 'isfixed' values)
- * and pastes it into the appropriate ParsedSaveData entries. */
-void copyParsedIntToParsedData_SudokuBoard(Parser *par, uint8_t *destination) {
-    int row_number = 0;
-    for (int i=0; i < 9; i++) {
-        char *buf[1 + MAX_NUM_LEN + 1];
-        
-        // parse 9 digits
-        char *parsed_row = parseInt(par, buf);
-
-        // copy 9 digits to the right array indices
-        for (int j=0; j < 9; j++) {
-            int idx = j + 9 * row_number;
-            // convert char into integer
-            destination[idx] = parsed_row[idx] - '0';
-        }
-
-        skipTrivia(par);
-    }
-}
-
-/* This function reads either the savefile or the user command line,
- * then parses it and finally saves their content in a ParsedSaveData object. */
-void parseCmd(char *cmdline, ParsedSaveData *parsed) {
-    Parser *par = createParser(cmdline);
-    int step = 1;
-
-    while (par->next[0]) {
-        skipTrivia(par);
-
-        switch (step) {
-        // Parse SudokuBoard Values    
-        case 1:
-            copyParsedIntToParsedData(par, parsed->values);
-            step++;
-            break;
-
-        // Parse SudokuBoard fixed cells
-        case 2:
-            copyParsedIntToParsedData(par, parsed->fixed);
-            step++;       
-            break;
-
-        // Parse Mode and Variant
-        case 3:
-            
-            char *buf[1 + 1];
-            parsed->mode = parseInt(par, buf);
-            skipTrivia(par);
-            parsed->variant = parseInt(par, buf);
-            step++;
-            break;
-
-        // Parse Elapsed Time
-        case 5:
-            //TODO
-            step++;
-            break;
-
-        // Parse MoveHistory's CurrentIdx
-        case 6:
-            step++;
-            break;
-        
-        // Parse MoveHistory's Len
-        case 7:
-            step++;
-            break;
-
-
-        // Parse Moves:
-        case 8:
-            /*
-            for () {
-                // - Parse Idx, Oldv, Newv
-            }
-            */
-            step++;
-            break;
-        }
-        
-        if (step > 8) break;
-    }
-};
-
-//TODO: parse savefile
 
 // ============================== TERMINAL FUNCTIONS =========================
 
@@ -980,7 +801,7 @@ static struct termios old_termios;
 /* Most notably: this function restores canonic mode. */
 void restoreTerminal(void) {
     tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
-};
+}
 
 
 // ================================= MAIN =================================
@@ -1086,13 +907,10 @@ int main(int argc, char **argv) {
     // Seed rand()
     srand(time(NULL));
 
-    // --- GAME OBJECTS ---
     SudokuBoard *sb = createSudokuBoard();
     MoveHistory *mh = createMoveHistory();
-
     //SaveState *s = createSaveState(sb, mh, mode, variant); // FIXME: devo capire come cazzo sistemare il savefiles
     SaveState *s = NULL;
-
     // if (è stata scelta la modalità new game)
     generateSudoku(sb, mode);
     // else (è stata scelta la modalità continue)
@@ -1175,7 +993,7 @@ int main(int argc, char **argv) {
                 if (s) free(s);
                 s = createSaveState(sb, mh, mode, variant);
 
-                if (saveGame(s, filepath)) { // FIXME: implement time
+                if (saveGame(s, sb, mh, filepath)) { // FIXME: implement time
                     printf("Game saved successfully!\n");
                 
                 } else { //FIXME: cornuto e mazziato while saving
